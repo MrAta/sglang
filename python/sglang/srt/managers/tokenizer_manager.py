@@ -20,17 +20,21 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 import uuid
+from concurrent import futures
 from typing import Any, Dict, List, Optional, Union
 
 import fastapi
+import grpc
 import uvloop
 import zmq
 import zmq.asyncio
 from fastapi import BackgroundTasks
 
 from sglang.srt.configs.model_config import ModelConfig
+from sglang.srt.grpc_server import CompletionServicer
 from sglang.srt.hf_transformers_utils import get_processor, get_tokenizer
 from sglang.srt.managers.image_processor import (
     get_dummy_image_processor,
@@ -60,6 +64,7 @@ from sglang.srt.managers.io_struct import (
     UpdateWeightsFromDistributedReqOutput,
 )
 from sglang.srt.metrics.collector import TokenizerMetricsCollector
+from sglang.srt.proto import completion_pb2_grpc
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.server_args import PortArgs, ServerArgs
 from sglang.srt.utils import get_zmq_socket, kill_process_tree
@@ -170,6 +175,8 @@ class TokenizerManager:
                     # TODO: Add lora name/path in the future,
                 },
             )
+        if self.server_args.grpc_port:
+            self._run_grpc_server()
 
     async def generate_request(
         self,
@@ -788,6 +795,45 @@ class TokenizerManager:
             else:
                 ret.append(None)
         return ret
+
+    def _create_grpc_server(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 50051,
+        max_workers: Optional[int] = None,
+    ):
+        server = grpc.aio.server(
+            futures.ThreadPoolExecutor(max_workers=max_workers),
+            options=[
+                ("grpc.max_send_message_length", 100 * 1024 * 1024),
+                ("grpc.max_receive_message_length", 100 * 1024 * 1024),
+            ],
+        )
+
+        completion_pb2_grpc.add_CompletionServiceServicer_to_server(
+            CompletionServicer(self.generate_request), server
+        )
+        server.add_insecure_port(f"{host}:{port}")
+        return server
+
+    def _run_grpc_server(self):
+        if self.to_create_loop:
+            self.create_handle_loop()
+
+        async def serve_grpc_server():
+            server = self._create_grpc_server(
+                host=self.server_args.host,
+                port=self.server_args.grpc_port,
+            )
+            await server.start()
+            await server.wait_for_termination()
+
+        uvloop.install()
+        loop = asyncio.get_event_loop()
+        loop.create_task(serve_grpc_server())
+        logger.info(
+            f"gRPC server started on {self.server_args.host}:{self.server_args.grpc_port}"
+        )
 
 
 class SignalHandler:
