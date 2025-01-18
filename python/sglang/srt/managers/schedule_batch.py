@@ -217,6 +217,7 @@ class Req:
         input_embeds: Optional[List[List[float]]] = None,
         session_id: Optional[str] = None,
         eos_token_ids: Optional[Set[int]] = None,
+        schedulable: bool = True,
     ):
         # Input and output info
         self.rid = rid
@@ -313,6 +314,9 @@ class Req:
 
         # The number of cached tokens, that were already cached in the KV cache
         self.cached_tokens = 0
+
+        # Whether the request is schedulable
+        self.schedulable = schedulable
 
     def extend_image_inputs(self, image_inputs):
         if self.image_inputs is None:
